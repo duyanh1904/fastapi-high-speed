@@ -1,6 +1,10 @@
 # fastapi-high-speed
 fastapi-high-speed
-# Run docker 
+
+# Run with docker-compose
+sudo docker compose up -d
+
+# Run with docker 
 sudo docker build --no-cache -t fastapi-app:latest .
 
 sudo docker run -d \                                                                                                  ─╯

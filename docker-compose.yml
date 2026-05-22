@@ -1,0 +1,100 @@
+version: "3.8"
+
+services:
+  # ==========================================
+  # 1. Ứng dụng FastAPI
+  # ==========================================
+  fastapi-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fastapi_high_speed_app
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_URL=redis://redis-cache-server:6379/0
+      - DATABASE_URL=mysql+aiomysql://root@tidb-server:4000/test
+    restart: always
+    # Đã hạ cấp xuống depend theo dạng container_started tiêu chuẩn
+    depends_on:
+      - redis-cache-server
+      - tidb-server
+
+  # ==========================================
+  # 2. Redis Cache Server
+  # ==========================================
+  redis-cache-server:
+    image: redis:7.2-alpine
+    container_name: fastapi_redis_cache
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: always
+    command: redis-server --appendonly yes
+
+  # ==========================================
+  # 3. PD Server (Bộ não điều phối & Chứa Dashboard UI)
+  # ==========================================
+  pd-server:
+    image: pingcap/pd:v7.5.0
+    container_name: tidb_cluster_pd
+    ports:
+      - "2379:2379" # Cổng vào TiDB Dashboard
+    volumes:
+      - pd_data:/data
+    restart: always
+    command:
+      - --name=pd
+      - --data-dir=/data
+      - --client-urls=http://0.0.0.0:2379
+      - --peer-urls=http://0.0.0.0:2380
+      - --advertise-client-urls=http://pd-server:2379
+      - --advertise-peer-urls=http://pd-server:2380
+      - --initial-cluster=pd=http://pd-server:2380
+
+  # ==========================================
+  # 4. TiKV Server (Tầng lưu trữ 1 triệu bản ghi)
+  # ==========================================
+  tikv-server:
+    image: pingcap/tikv:v7.5.0
+    container_name: tidb_cluster_tikv
+    volumes:
+      - tikv_data:/data
+    restart: always
+    command:
+      - --addr=0.0.0.0:20160
+      # THÊM DÒNG NÀY ĐỂ FIX LỖI: Định danh địa chỉ quảng bá trong mạng Docker
+      - --advertise-addr=tikv-server:20160
+      - --data-dir=/data
+      - --pd-endpoints=http://pd-server:2379
+    depends_on:
+      - pd-server
+
+  # ==========================================
+  # 5. TiDB Server (Nhân xử lý SQL để FastAPI kết nối)
+  # ==========================================
+  tidb-server:
+    image: pingcap/tidb:v7.5.0
+    container_name: tidb_cluster_tidb
+    ports:
+      - "4000:4000"   # Cổng Giao tiếp SQL
+      - "10080:10080" # Cổng Status
+    restart: always
+    command:
+      - --store=tikv
+      - --path=pd-server:2379
+    depends_on:
+      - pd-server
+      - tikv-server
+
+# ==========================================
+# Phân vùng lưu trữ dữ liệu thực tế
+# ==========================================
+volumes:
+  redis_data:
+    driver: local
+  pd_data:
+    driver: local
+  tikv_data:
+    driver: local
