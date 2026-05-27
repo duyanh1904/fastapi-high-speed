@@ -11,6 +11,11 @@ services:
     container_name: fastapi_high_speed_app
     ports:
       - "8000:8000"
+    # For reload app
+    volumes:
+      - ./app:/app/app
+    # 👇 GHI ĐÈ LỆNH CHẠY: Bật tính năng --reload và ép về 1 worker để dev
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     environment:
       - REDIS_URL=redis://redis-cache-server:6379/0
       - DATABASE_URL=mysql+aiomysql://root@tidb-server:4000/test

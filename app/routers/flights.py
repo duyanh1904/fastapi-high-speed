@@ -5,7 +5,7 @@ from app.schemas.flight import FlightSearchRequest, FlightSearchResponse
 from app.repositories.flight import FlightDBRepository, FlightCrawlerRepository
 from app.services.flight import FlightFlightService
 
-router = APIRouter(prefix="/crawler", tags=["Flight Modern Architecture"])
+router = APIRouter(prefix="/flights", tags=["Flights"])
 
 # Hàm Factory đóng vai trò Injector kết nối các lớp thông qua Protocol
 def get_flight_service(db: AsyncSession = Depends(get_db_session)) -> FlightFlightService:
@@ -25,6 +25,10 @@ async def search_best_flights(
     payload: FlightSearchRequest,
     service: FlightFlightService = Depends(get_flight_service)
 ):
+    """
+    Nghiệp vụ chính: Kích hoạt cào song song từ internet, kết hợp dữ liệu
+    lịch sử trong database, loại bỏ trùng lặp và sắp xếp vé rẻ nhất.
+    """
     try:
         return await service.get_and_process_all_deals(payload)
     except Exception as e:

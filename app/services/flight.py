@@ -13,10 +13,6 @@ class FlightFlightService:
         self.crawler_repo = crawler_repo
 
     async def get_and_process_all_deals(self, payload: FlightSearchRequest) -> FlightSearchResponse:
-        """
-        N nghiệp vụ chính: Kích hoạt cào song song từ internet, kết hợp dữ liệu 
-        lịch sử trong database, loại bỏ trùng lặp và sắp xếp vé rẻ nhất.
-        """
         # 1. Chạy song song cào mạng từ 3 nguồn qua crawler_repo
         crawler_tasks = asyncio.gather(
             self.crawler_repo.crawl_flights_from_source("Vietnam Airlines", payload),
