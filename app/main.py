@@ -5,12 +5,13 @@ from fastapi import FastAPI, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy import text
-from app.schemas import OrderCreate, OrderResponse
 from app.dependencies import rate_limiter
 from app.database import get_redis_client, redis_pool, get_db, engine
-from app.models import Base, OrderModel
+from app.models.order import OrderModel
+from app.schemas.order import OrderCreate, OrderResponse
 from app.database_util import create_db_lifespan
-from app.routers import flights
+from app.routers.api import api_router
+from app.core.database import Base
 
 # 1. Khởi tạo db_lifespan bảo vệ
 db_lifespan = create_db_lifespan(engine, base_metadata=Base.metadata, retries=12, delay=5)
@@ -21,9 +22,7 @@ app = FastAPI(
     lifespan=db_lifespan
 )
 
-app.include_router(flights.router)
-
-# === ĐÃ XÓA BỎ TOÀN BỘ KHỐI @app.on_event("startup") LỖI THỜI ===
+app.include_router(api_router)
 
 @app.on_event("shutdown")
 async def shutdown_event():

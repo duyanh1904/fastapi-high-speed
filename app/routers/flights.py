@@ -1,55 +1,34 @@
-import asyncio
-from fastapi import APIRouter, status, HTTPException
-from app.schemas import FlightSearchRequest, FlightSearchResponse
-# 1. SỬA ĐOẠN IMPORT NÀY: Chỉ import hàm thực tế đang có
-from app.crawler import crawl_flights_from_source
+from fastapi import APIRouter, Depends, status, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.core.database import get_db_session  # Hàm yield DB Session của bạn
+from app.schemas.flight import FlightSearchRequest, FlightSearchResponse
+from app.repositories.flight import FlightDBRepository, FlightCrawlerRepository
+from app.services.flight import FlightFlightService
 
-router = APIRouter(
-    prefix="/api/v1/crawler",
-    tags=["Flight Crawler Engine"]
-)
+router = APIRouter(prefix="/crawler", tags=["Flight Modern Architecture"])
+
+# Hàm Factory đóng vai trò Injector kết nối các lớp thông qua Protocol
+def get_flight_service(db: AsyncSession = Depends(get_db_session)) -> FlightFlightService:
+    db_repo = FlightDBRepository(db)
+    crawler_repo = FlightCrawlerRepository()
+
+    # Inject 2 thực thể vào Service (Service chỉ nhận diện qua lớp Protocol)
+    return FlightFlightService(db_repo=db_repo, crawler_repo=crawler_repo)
 
 @router.post(
     "/search",
     response_model=FlightSearchResponse,
     status_code=status.HTTP_200_OK,
-    summary="Kích hoạt hệ thống cào vé máy bay giá tốt theo thời gian thực"
+    summary="Tìm kiếm vé kết hợp DB và Crawler chuẩn phong cách Protocol"
 )
-async def search_best_flights(payload: FlightSearchRequest):
+async def search_best_flights(
+    payload: FlightSearchRequest,
+    service: FlightFlightService = Depends(get_flight_service)
+):
     try:
-        # 2. SỬA ĐOẠN GATHER NÀY: Gọi cùng 1 hàm nhưng truyền các string nguồn khác nhau
-        results = await asyncio.gather(
-            crawl_flights_from_source("Vietnam Airlines", payload),
-            crawl_flights_from_source("VietJet Air", payload),
-            crawl_flights_from_source("Bamboo Airways", payload),
-            return_exceptions=True
-        )
-
-        all_tickets = []
-        for src_result in results:
-            if isinstance(src_result, Exception):
-                print(f"⚠️ Phát hiện lỗi ở một nguồn crawler: {src_result}")
-                continue
-            if isinstance(src_result, list):
-                all_tickets.extend(src_result)
-
-        if not all_tickets:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Không tìm thấy chuyến bay nào hợp lệ."
-            )
-
-        all_tickets.sort(key=lambda x: x.price)
-        return FlightSearchResponse(
-            search_info=payload,
-            total_found=len(all_tickets),
-            tickets=all_tickets
-        )
-
-    except HTTPException as http_ex:
-        raise http_ex
+        return await service.get_and_process_all_deals(payload)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Lỗi hệ thống trong quá trình vận hành crawler: {str(e)}"
+            detail=f"Lỗi hệ thống: {str(e)}"
         )

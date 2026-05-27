@@ -15,5 +15,8 @@ fastapi-app:latest
 
 sudo docker logs -f my-fastapi-container
 
+# View tiDB dashboard
+http://127.0.0.1:2379/dashboard/#/signin
+
 # Dock Api
 http://127.0.0.1:8000/docs#/default/create_order_api_v1_orders_post
