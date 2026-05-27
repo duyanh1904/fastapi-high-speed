@@ -1,11 +1,10 @@
 from fastapi import FastAPI
 
-from app.core.database import Base
-from app.database import engine, redis_pool
+from app.core.database import Base, async_engine, redis_pool
 from app.database_util import create_db_lifespan
 from app.routers.api import api_router
 
-db_lifespan = create_db_lifespan(engine, base_metadata=Base.metadata, retries=12, delay=5)
+db_lifespan = create_db_lifespan(async_engine, base_metadata=Base.metadata, retries=12, delay=5)
 
 app = FastAPI(
     title="High-Performance API Demo",

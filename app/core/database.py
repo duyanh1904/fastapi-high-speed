@@ -1,52 +1,72 @@
-import os
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
+import redis.asyncio as aioredis
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.orm import declarative_base
 
-# 1. Cấu hình chuỗi kết nối Database (Database URL)
-# Trong môi trường Production lớn, URL này bắt buộc phải lấy từ biến môi trường (Environment Variable)
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "mysql+aiomysql://root:password@127.0.0.1:3306/flight_db"
+from app.config import settings
+
+# ==============================================================================
+# 1. CẤU HÌNH REDIS CACHE (High-Concurrency Connection Pool)
+# ==============================================================================
+
+# Khởi tạo Connection Pool dùng chung cho Redis để tối ưu hóa số lượng kết nối tái sử dụng
+redis_pool = aioredis.ConnectionPool.from_url(
+    settings.REDIS_URL,
+    max_connections=100,       # Giới hạn tối đa 100 kết nối đồng thời tới Redis Server
+    decode_responses=True,      # Tự động giải mã bytes thành String khi đọc/ghi data
 )
 
-# 2. Khởi tạo Async Engine
-# Cấu hình Pool Connection nhằm tối ưu hóa số lượng kết nối đồng thời (High-Concurrency)
+def get_redis_client() -> aioredis.Redis:
+    """
+    Dependency Provider trả về một thực thể Redis Client từ Pool.
+    Có thể sử dụng trực tiếp qua Depends() tại tầng Controller hoặc Service.
+    """
+    return aioredis.Redis(connection_pool=redis_pool)
+
+
+# ==============================================================================
+# 2. CẤU HÌNH SQL DATABASE (Async Engine & Session cho TiDB / MySQL)
+# ==============================================================================
+
+# Khởi tạo Async Engine kết nối Database với các tham số tối ưu chịu tải cao
 async_engine = create_async_engine(
-    DATABASE_URL,
-    echo=False,                 # Chuyển thành True nếu muốn log toàn bộ câu lệnh SQL thô ra terminal để debug
-    pool_size=20,               # Số lượng connection tối đa được duy trì trong pool
-    max_overflow=10,            # Số lượng connection được phép vượt ngưỡng khi pool bị quá tải
-    pool_recycle=3600,          # Tự động làm mới kết nối sau 1 giờ để tránh lỗi "MySQL server has gone away"
-    pool_pre_ping=True          # Tự động kiểm tra trạng thái kết nối trước khi dùng để tránh gửi lệnh vào connection chết
+    settings.DATABASE_URL,
+    echo=False,                 # Chuyển thành True khi cần debug, log toàn bộ SQL thô ra terminal
+    pool_size=20,               # Số lượng kết nối tối đa được duy trì trong Pool
+    max_overflow=10,            # Số lượng kết nối cho phép vượt ngưỡng khi hệ thống bị quá tải
+    pool_recycle=3600,          # Tự động làm mới kết nối sau 1 giờ để tránh rớt socket (MySQL timeout)
+    pool_pre_ping=False          # Kiểm tra trạng thái kết nối trước khi gửi câu lệnh SQL nhằm tránh lỗi connection chết
 )
 
-# 3. Khởi tạo Factory sản xuất Session bất đồng bộ (AsyncSession)
+# Nhà máy (Factory) sản xuất các phiên làm việc bất đồng bộ (AsyncSession)
 async_session_factory = async_sessionmaker(
     bind=async_engine,
     class_=AsyncSession,
-    expire_on_commit=False,     # Giữ lại dữ liệu của Object sau khi Commit để tránh lỗi Greenlet trong Async
+    expire_on_commit=False,     # Tránh lỗi Greenlet trong Async khi cố truy cập thuộc tính object sau khi commit
     autocommit=False,
     autoflush=False
 )
 
-# 4. Base Class để các tầng Model (ví dụ: FlightModel) kế thừa nhằm định nghĩa cấu trúc bảng
+# Base Class để các tầng Model (OrderModel, FlightModel) kế thừa định nghĩa cấu trúc bảng vật lý
 Base = declarative_base()
 
-# 5. Dependency Provider: Hàm yield DB Session cho FastAPI Injector
-# Hàm này tuân thủ nguyên lý quản lý tài nguyên êm đẹp (Context Manager)
+
+# ==============================================================================
+# 3. DEPENDENCY INJECTION PROVIDERS FOR FASTAPI
+# ==============================================================================
+
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
     """
-    Mỗi Request từ Client đến sẽ được cấp duy nhất một DB Session độc lập.
-    Sau khi API xử lý xong và trả kết quả cho User, Session sẽ tự động đóng (Close).
+    Quản lý vòng đời (Lifecycle) kết nối DB cho mỗi HTTP Request:
+    - Cấp duy nhất một Session độc lập khi Request đi vào hệ thống.
+    - Tự động hủy bỏ (Rollback) toàn bộ giao dịch nếu xảy ra lỗi ngầm ở Service/Controller.
+    - Đảm bảo đóng Session (Close) an toàn để trả kết nối về Pool, chống Connection Leak.
     """
     async with async_session_factory() as session:
         try:
             yield session
-            # Nếu toàn bộ luồng xử lý ở Controller/Service không có lỗi, lệnh commit sẽ chạy ngầm (tùy chọn)
-            # Hoặc bạn có thể chủ động commit tại tầng Repository/Service.
         except Exception:
-            await session.rollback() # Nếu dính bất kỳ lỗi hệ thống nào, tự động hủy bỏ mọi thao tác (Rollback)
+            await session.rollback()
             raise
         finally:
-            await session.close()     # Đảm bảo trả kết nối về Pool một cách an toàn, chống rò rỉ cổng mạng (Connection Leak)
+            await session.close()
