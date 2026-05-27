@@ -10,6 +10,7 @@ from app.dependencies import rate_limiter
 from app.database import get_redis_client, redis_pool, get_db, engine
 from app.models import Base, OrderModel
 from app.database_util import create_db_lifespan
+from app.routers import flights
 
 # 1. Khởi tạo db_lifespan bảo vệ
 db_lifespan = create_db_lifespan(engine, base_metadata=Base.metadata, retries=12, delay=5)
@@ -19,6 +20,8 @@ app = FastAPI(
     title="High-Performance API Demo",
     lifespan=db_lifespan
 )
+
+app.include_router(flights.router)
 
 # === ĐÃ XÓA BỎ TOÀN BỘ KHỐI @app.on_event("startup") LỖI THỜI ===
 
