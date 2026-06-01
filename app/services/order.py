@@ -24,5 +24,25 @@ class OrderService:
         return OrderResponse(order_id=generated_id, status="CREATED_IN_DB", cached=False)
 
     async def seed_orders(self, total_records: int = 1_000_000, batch_size: int = 20_000) -> None:
-        for _ in range(0, total_records, batch_size):
-            await self.order_repository.insert_seed_batch(batch_size=batch_size)
+            current_seeded = 0
+
+            for _ in range(0, total_records, batch_size):
+                # 🌟 Mấu chốt cứu cánh: Mỗi Batch mở 1 Session riêng biệt, độc lập hoàn toàn với Request khác
+                async with async_session_factory() as session:
+                    try:
+                        await self.order_repository.insert_seed_batch(
+                            session=session,
+                            batch_size=batch_size
+                        )
+                        current_seeded += batch_size
+                        print(f"✅ Đã gieo thành công: {current_seeded}/{total_records} đơn hàng.")
+
+                    except Exception as e:
+                        await session.rollback()
+                        print(f"❌ Lỗi tại Batch xử lý: {str(e)}")
+                        raise e
+                    finally:
+                        await session.close() # Đóng socket ngay lập tức sau khi xong 1 batch
+
+                # Cho Event Loop nghỉ 0.01 giây để giải tỏa bớt CPU và nhường luồng cho request khác nếu có
+                await asyncio.sleep(0.01)
