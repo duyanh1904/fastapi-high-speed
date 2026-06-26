@@ -1,4 +1,12 @@
-version: "3.8"
+version: "3.9"
+
+# ==========================================
+# MẠNG TÙY CHỈNH (Tăng cường bảo mật nội bộ)
+# ==========================================
+networks:
+  app-network:
+    driver: bridge
+    name: tidb_network
 
 services:
   # ==========================================
@@ -11,22 +19,27 @@ services:
     container_name: fastapi_high_speed_app
     ports:
       - "8000:8000"
-    # For reload app
     volumes:
-      - ./app:/app/app
-    # 👇 GHI ĐÈ LỆNH CHẠY: Bật tính năng --reload và ép về 1 worker để dev
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      - ./app:/app/app          # Live-reload cho dev
+    # Tối ưu: Tách riêng command reload cho dev, có thể dùng profile
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --workers 1
     environment:
       - REDIS_URL=redis://redis-cache-server:6379/0
       - DATABASE_URL=mysql+aiomysql://root@tidb-server:4000/test
-    restart: always
-    # Đã hạ cấp xuống depend theo dạng container_started tiêu chuẩn
+    restart: unless-stopped      # Thay vì always, tránh khởi động lại vô hạn khi gặp lỗi cấu hình
+    init: true                   # Chuyển tín hiệu SIGTERM thành SIGINT, giúp tắt app sạch sẽ
+    stop_signal: SIGINT          # Cho phép Uvicorn dọn dẹp kết nối DB/Redis
+    stop_grace_period: 10s       # Chờ đợi xử lý request còn dang dở
     depends_on:
-      - redis-cache-server
-      - tidb-server
+      redis-cache-server:
+        condition: service_healthy
+      tidb-server:
+        condition: service_healthy
+    networks:
+      - app-network
 
   # ==========================================
-  # 2. Redis Cache Server
+  # 2. Redis Cache Server (Có Healthcheck & Giới hạn RAM)
   # ==========================================
   redis-cache-server:
     image: redis:7.2-alpine
@@ -35,20 +48,32 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
-    restart: always
-    command: redis-server --appendonly yes
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks:
+      - app-network
 
   # ==========================================
-  # 3. PD Server (Bộ não điều phối & Chứa Dashboard UI)
+  # 3. PD Server (Bộ não điều phối)
   # ==========================================
   pd-server:
     image: pingcap/pd:v7.5.0
     container_name: tidb_cluster_pd
     ports:
-      - "2379:2379" # Cổng vào TiDB Dashboard
+      - "2379:2379"
     volumes:
       - pd_data:/data
-    restart: always
+    restart: unless-stopped
     command:
       - --name=pd
       - --data-dir=/data
@@ -57,49 +82,87 @@ services:
       - --advertise-client-urls=http://pd-server:2379
       - --advertise-peer-urls=http://pd-server:2380
       - --initial-cluster=pd=http://pd-server:2380
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:2379/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks:
+      - app-network
 
   # ==========================================
-  # 4. TiKV Server (Tầng lưu trữ 1 triệu bản ghi)
+  # 4. TiKV Server (Tầng lưu trữ)
   # ==========================================
   tikv-server:
     image: pingcap/tikv:v7.5.0
     container_name: tidb_cluster_tikv
     volumes:
       - tikv_data:/data
-    restart: always
+    restart: unless-stopped
     command:
       - --addr=0.0.0.0:20160
-      # THÊM DÒNG NÀY ĐỂ FIX LỖI: Định danh địa chỉ quảng bá trong mạng Docker
-      - --advertise-addr=tikv-server:20160
+      - --advertise-addr=tikv-server:20160   # Đã fix lỗi advertise
       - --data-dir=/data
       - --pd-endpoints=http://pd-server:2379
     depends_on:
-      - pd-server
+      pd-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "sh", "-c", "timeout 1 sh -c 'echo >/dev/tcp/localhost/20160'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 1.5G
+    networks:
+      - app-network
 
   # ==========================================
-  # 5. TiDB Server (Nhân xử lý SQL để FastAPI kết nối)
+  # 5. TiDB Server (Xử lý SQL - Chỉ khởi động sau khi TiKV sẵn sàng)
   # ==========================================
   tidb-server:
     image: pingcap/tidb:v7.5.0
     container_name: tidb_cluster_tidb
     ports:
-      - "4000:4000"   # Cổng Giao tiếp SQL
-      - "10080:10080" # Cổng Status
-    restart: always
+      - "4000:4000"
+      - "10080:10080"
+    restart: unless-stopped
     command:
       - --store=tikv
       - --path=pd-server:2379
     depends_on:
-      - pd-server
-      - tikv-server
+      pd-server:
+        condition: service_healthy
+      tikv-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:10080/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s          # TiDB cần thời gian để bind với TiKV
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    networks:
+      - app-network
 
 # ==========================================
-# Phân vùng lưu trữ dữ liệu thực tế
+# PHÂN VÙNG LƯU TRỮ
 # ==========================================
 volumes:
   redis_data:
-    driver: local
+    name: tidb_redis_data
   pd_data:
-    driver: local
+    name: tidb_pd_data
   tikv_data:
-    driver: local
+    name: tidb_tikv_data
